@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  Key:
+    Type: String
+    Description: EC2 Key Name
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: VPC
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-2a
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGateway
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref RouteTable
+  SubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref SubnetA
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "VDI Windows SG"
+      GroupDescription: "EC2 Group"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '3389'
+          ToPort: '3389'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1  
+          CidrIp: 0.0.0.0/0
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Windows
+  Windows:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      ImageId:  ami-0ca69a9d06da3835d
+      InstanceType: t2.micro
+      KeyName: !Ref Key
+      SubnetId: !Ref SubnetA
+      SecurityGroupIds:
+        - Ref: InstanceSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 250
+      UserData:
+        Fn::Base64: !Sub |
+          <powershell>
+              Set-TimeZone -Name "SA Pacific Standard Time" 
+
+              mkdir E:\vsts-agent
+              mkdir C:\instaladores
+              mkdir C:\develop-tools
+              mkdir C:\devops-tools\installers
+
+              echo "Descargar instalador de Java"
+              Invoke-WebRequest -Uri https://utils-files-installation-qa.s3.us-east-2.amazonaws.com/jdk-8u144-windows-x64.exe -OutFile "C:\instaladores\jdk-8u144-windows-x64.exe"
+            
+              echo "Descargar instalador de Gradle"
+              Invoke-WebRequest -Uri https://downloads.gradle-dn.com/distributions/gradle-6.4.1-all.zip -OutFile "C:\instaladores\gradle-6.4.1-all.zip"
+
+              echo "Instalar Google Chrome"
+              $Installer = "$env:temp\chrome_installer.exe"
+              $url = 'http://dl.google.com/chrome/install/375.126/chrome_installer.exe'
+              Invoke-WebRequest -Uri $url -OutFile $Installer -UseBasicParsing
+              Start-Process -FilePath $Installer -Args '/silent /install' -Wait
+              Remove-Item -Path $Installer
+
+              echo "Instalar Java"
+              Start-Process C:\instaladores\jdk-8u144-windows-x64.exe '/s REBOOT=0 SPONSORS=0 AUTO_UPDATE=0' -wait
+              echo $?
+              echo "Crear variables de entorno JAVA"
+              cd C:\
+              [Environment]::SetEnvironmentVariable("Path",[Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine) + ";C:\Program Files\Java\jdk1.8.0_144\bin", [EnvironmentVariableTarget]::Machine)
+          
+              echo "Instalar Gradle"
+              cd C:\instaladores
+              Add-Type -AssemblyName System.IO.Compression.FileSystem
+              mkdir "C:\Program Files\gradle"
+              [System.IO.Compression.ZipFile]::ExtractToDirectory("C:\instaladores\gradle-6.4.1-all.zip", "C:\Program Files\gradle")
+               echo $?
+              echo "Crear variables de entorno GRADLE"
+              cd C:\
+              [Environment]::SetEnvironmentVariable("Path",[Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine) + ";C:\Program Files\gradle\gradle-6.4.1\bin", [EnvironmentVariableTarget]::Machine)
+          </powershell>
+      Tags:
+        -
+          Key: Name
+          Value:  VDI Reto SOLID - Sebastian Ramirez
+Outputs:
+  PublicIp:
+    Value:
+      Fn::GetAtt:
+        - Windows
+        - PublicIp
+    Description: Server's PublicIp Address
